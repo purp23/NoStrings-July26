@@ -68,6 +68,9 @@
   .m-status{font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;padding:6px 12px;display:flex;justify-content:space-between;align-items:center;background:#F2F5FB;color:#9AA6C0;border-bottom:1px solid var(--line);}
   .match.part .m-status{background:#EDF2FF;color:var(--kobra);}
   .match.done .m-status{background:var(--gold-bg);color:var(--gold);}
+  .match.bad{border-color:var(--live);}
+  .match.bad .m-status{background:#FFEDE9;color:var(--live);letter-spacing:.4px;text-transform:none;font-size:10.5px;}
+  .match.bad .scin{border-color:var(--live);color:var(--live);}
   .m-status .reset{cursor:pointer;font-size:14px;color:#AEB8CE;line-height:1;padding:2px 6px;letter-spacing:0;}
   .m-status .reset:active{color:var(--live);}
 
@@ -138,7 +141,8 @@
     </div>
     <div class="rules">
       <span class="rule">1 game to <b>21</b></span>
-      <span class="rule"><b>No</b> setting</span>
+      <span class="rule">At 20-all, <b>win by 2</b></span>
+      <span class="rule"><b>30</b> caps it</span>
       <span class="rule">Start on your <b>handicap</b></span>
       <span class="rule">Play <b>everyone</b> in your group</span>
       <span class="rule"><b>Total points</b> wins</span>
@@ -211,7 +215,8 @@ const ROUNDS=[
   { pairs:[[1,4],[2,3]], bye:0 },   // R4: 2v5, 3v4, 1-bye
   { pairs:[[3,1],[4,0]], bye:2 },   // R5: 4v2, 5v1, 3-bye
 ];
-const TARGET=21;
+const TARGET=21;        // points that normally win a game
+const MAX_SCORE=30;     // hard cap: at 29-all the 30th point wins
 const STORE_KEY="kobras-handicap-doubles-v2";
 const UNLOCK_KEY="kobras-scorer-unlocked";
 const MEDALS=["🥇","🥈","🥉"];
@@ -335,20 +340,51 @@ function getScore(g,i,j){
   const s=scores[key]||{};
   return {a:(s.a??null),b:(s.b??null),lo,hi,key};
 }
-const isComplete=s=>s.a!=null && s.b!=null && s.a!==s.b;
-const isPartial =s=>(s.a!=null||s.b!=null) && !isComplete(s);
+
+/* ---- Badminton scoring (BWF Law 7) ----
+   21 wins the game, EXCEPT:
+     · at 20-all you must lead by 2  → 22-20, 23-21 … 29-27
+     · at 29-all the 30th point wins → 30-29, and 30 is a hard cap
+   21-20 is only reachable playing WITHOUT setting, so it is allowed too —
+   this accepts every legal result under either rule set.
+   Scores here include the handicap start, so neither side can finish
+   below the number it started on. */
+function validateGame(x,y,hx,hy){
+  if(x==null||y==null) return {ok:false,msg:null};
+  if(!Number.isInteger(x)||!Number.isInteger(y)) return {ok:false,msg:"Whole numbers only"};
+  if(x===y) return {ok:false,msg:"A game can't be drawn"};
+  if(x<hx||y<hy) return {ok:false,msg:"Below a pair's handicap start"};
+  const w=Math.max(x,y), l=Math.min(x,y);
+  if(w<TARGET) return {ok:false,msg:`Winner must reach ${TARGET}`};
+  if(w>MAX_SCORE) return {ok:false,msg:`Nothing goes above ${MAX_SCORE}`};
+  if(w===TARGET) return {ok:true,msg:null};                       // 21-19, 21-20 …
+  if(w===MAX_SCORE) return (l===28||l===29)
+    ? {ok:true,msg:null}
+    : {ok:false,msg:"At 29-all the 30th point wins — 30–29 or 30–28"};
+  return (w-l===2)                                                // 22-20 … 29-27
+    ? {ok:true,msg:null}
+    : {ok:false,msg:"Past 20-all you must win by two"};
+}
+function checkGame(g,s){
+  const t=GROUPS[g].teams;
+  return validateGame(s.a,s.b,t[s.lo].h,t[s.hi].h);
+}
+const isFilled  =s=>s.a!=null&&s.b!=null;
+const isComplete=(g,s)=>isFilled(s)&&checkGame(g,s).ok;
+const isPartial =(g,s)=>(s.a!=null||s.b!=null)&&!isFilled(s);
+const isBad     =(g,s)=>isFilled(s)&&!checkGame(g,s).ok;
 
 function setScore(g,i,j,side,raw){
-  const key=mkey(g,i,j),lo=Math.min(i,j),hi=Math.max(i,j),teams=GROUPS[g].teams;
+  const key=mkey(g,i,j);
   const which=side==='lo'?'a':'b';
-  const floor=side==='lo'?teams[lo].h:teams[hi].h;
   let cur=scores[key]?{...scores[key]}:{a:null,b:null};
   if(raw===''||raw==null){ cur[which]=null; }
   else{
     let v=parseInt(raw,10);
-    if(isNaN(v)) v=null;
-    else v=Math.max(floor,Math.min(TARGET,v));
-    cur[which]=v;
+    /* Store exactly what was typed — no clamping. Clamping to 21 silently
+       turned a real 24-22 into 21, and clamping up to the handicap mangled
+       digits mid-typing. Anything impossible is flagged instead. */
+    cur[which]=isNaN(v)?null:v;
   }
   cur.t=Date.now();       // stamp so the newest edit wins when phones merge
   scores[key]=cur;        // empty entries kept as tombstones, not deleted,
@@ -361,7 +397,7 @@ function computeStandings(g){
   const teams=GROUPS[g].teams;
   const rows=teams.map((t,idx)=>({idx,t,P:0,W:0,L:0,PF:0,PA:0,pts:0}));
   for(let i=0;i<teams.length;i++) for(let j=i+1;j<teams.length;j++){
-    const s=getScore(g,i,j); if(!isComplete(s)) continue;
+    const s=getScore(g,i,j); if(!isComplete(g,s)) continue;   // invalid games don't count until fixed
     rows[i].P++;rows[j].P++;
     rows[i].PF+=s.a;rows[i].PA+=s.b;rows[j].PF+=s.b;rows[j].PA+=s.a;
     if(s.a>s.b){rows[i].W++;rows[i].pts+=2;rows[j].L++;}
@@ -402,20 +438,23 @@ function sideHTML(g,i,j,teamIdx){
   const s=getScore(g,i,j),teams=GROUPS[g].teams;
   const side=teamIdx===s.lo?'lo':'hi', t=teams[teamIdx];
   const val=side==='lo'?s.a:s.b, other=side==='lo'?s.b:s.a, floor=t.h;
-  const complete=isComplete(s), isWinner=complete&&val>other;
+  const complete=isComplete(g,s), isWinner=complete&&val>other;
   return `<div class="side ${isWinner?'winner':''}">
     <div class="names"><div class="n">${t.p1} <span class="amp">&amp;</span> ${t.p2}${isWinner?'<span class="trophy">🏆</span>':''}</div>
       <div class="start">starts on ${t.h}</div></div>
     <input class="scin" type="number" inputmode="numeric" min="${floor}" max="${TARGET}" step="1"
-      value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'}
+      value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'} max="${MAX_SCORE}"
       oninput="setScore(${g},${i},${j},'${side}',this.value)"
       onchange="render()">
   </div>`;
 }
 function matchHTML(g,i,j){
-  const s=getScore(g,i,j),complete=isComplete(s),partial=isPartial(s);
-  const cls=complete?'done':(partial?'part':'');
-  const status=complete?'Final':(partial?'Enter both scores':'Not recorded');
+  const s=getScore(g,i,j);
+  const complete=isComplete(g,s),partial=isPartial(g,s),bad=isBad(g,s);
+  const cls=bad?'bad':(complete?'done':(partial?'part':''));
+  const status=bad
+    ? `⚠ Check score — ${checkGame(g,s).msg}`
+    : (complete?'Final':(partial?'Enter both scores':'Not recorded'));
   return `<div class="match ${cls}"><div class="m-status"><span>${status}</span>
     ${canScore?`<span class="reset" title="Clear this result" onclick="resetMatch(${g},${i},${j})">↺</span>`:''}</div>
     ${sideHTML(g,i,j,i)}${sideHTML(g,i,j,j)}</div>`;
@@ -423,7 +462,7 @@ function matchHTML(g,i,j){
 function renderFixtures(g){
   const teams=GROUPS[g].teams;
   let html=`<div class="eyebrow">Results entry</div>
-    <div class="help">After each game, type both final scores (the winner reaches <b>21</b>). Scores include the handicap start, so a team on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
+    <div class="help">After each game, type both final scores. Winner normally reaches <b>21</b> — but at 20-all you play on until someone leads by <b>2</b>, and at 29-all the <b>30th</b> point wins. Scores include the handicap start, so a pair on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
   ROUNDS.forEach((rd,ri)=>{
     const byeName=`${teams[rd.bye].p1} & ${teams[rd.bye].p2}`;
     html+=`<div class="round-label">Round ${ri+1}<span class="bye">bye · ${byeName}</span></div>`;
