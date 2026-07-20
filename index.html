@@ -89,6 +89,12 @@
   .scin:focus{outline:none;border-color:var(--kobra);background:#fff;box-shadow:0 0 0 3px rgba(30,80,223,.15);}
   .side.winner .scin{border-color:var(--gold);color:var(--gold);background:#fff;}
 
+  .viewbar{display:none;font-size:11.5px;color:var(--ink-soft);background:#FFF6E6;border:1px solid #F2DFB4;border-radius:10px;padding:9px 12px;margin:14px 0 0;line-height:1.4;}
+  .viewbar b{color:var(--ink);}
+  body.locked .viewbar{display:block;}
+  body.locked .scin{background:#F1F3F8;color:#9AA6C0;border-style:dashed;}
+  .btn-line.unlocked{border-color:var(--ok);color:var(--ok);}
+
   .help{font-size:11.5px;color:var(--ink-soft);background:#EEF3FF;border:1px solid #DCE6FF;border-radius:10px;padding:9px 12px;margin:4px 0 12px;line-height:1.4;}
 
   .foot{margin:24px 0 10px;display:flex;flex-direction:column;gap:10px;align-items:center;}
@@ -101,6 +107,18 @@
   .savenote.warn{color:var(--live);}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);}
   .savenote.warn .dot{background:var(--live);}
+
+  .modal{position:fixed;inset:0;z-index:70;background:rgba(8,21,67,.55);backdrop-filter:blur(2px);display:none;align-items:center;justify-content:center;padding:20px;}
+  .modal.show{display:flex;}
+  .modal-card{background:var(--card);border-radius:16px;padding:20px;width:100%;max-width:340px;box-shadow:0 16px 44px rgba(0,0,0,.3);}
+  .modal-title{font-family:'Bebas Neue';font-size:26px;letter-spacing:1px;color:var(--ink);line-height:1;}
+  .modal-sub{font-size:12.5px;color:var(--ink-soft);margin:7px 0 14px;line-height:1.45;}
+  .modal-input{width:100%;font-family:'Inter';font-size:17px;font-weight:600;padding:12px 14px;border:1.5px solid var(--line-strong);border-radius:11px;background:#F8FAFE;color:var(--ink);}
+  .modal-input:focus{outline:none;border-color:var(--kobra);background:#fff;box-shadow:0 0 0 3px rgba(30,80,223,.15);}
+  .modal-err{display:none;font-size:12px;font-weight:600;color:var(--live);margin-top:8px;}
+  .modal-err.show{display:block;}
+  .modal-btns{display:flex;gap:9px;margin-top:16px;}
+  .modal-btns .btn-line{flex:1;text-align:center;}
 
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:11px 18px;border-radius:12px;font-size:13px;font-weight:600;opacity:0;transition:all .25s;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.25);pointer-events:none;}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -123,6 +141,7 @@
       <span class="rule"><b>No</b> setting</span>
       <span class="rule">Start on your <b>handicap</b></span>
       <span class="rule">Play <b>everyone</b> in your group</span>
+      <span class="rule"><b>Total points</b> wins</span>
     </div>
     <div class="info">
       <div class="info-card"><div class="k">Entry</div><div class="v">£7</div></div>
@@ -133,13 +152,28 @@
 
 <div class="wrap">
   <div class="tabs" id="tabs"></div>
+  <div class="viewbar" id="viewbar">👀 <b>View only</b> — tap <b>Scorer login</b> at the bottom to enter results</div>
   <div id="content"></div>
   <div class="foot">
     <div class="foot-btns">
       <button class="btn-line primary" id="copyBtn">Copy results</button>
+      <button class="btn-line" id="lockBtn">Scorer login</button>
       <button class="btn-line danger" id="resetAll">Reset all</button>
     </div>
     <div class="savenote" id="savenote"><span class="dot"></span><span id="savetext">Ready</span></div>
+  </div>
+</div>
+<div class="modal" id="pcModal">
+  <div class="modal-card">
+    <div class="modal-title">Scorer login</div>
+    <p class="modal-sub">Enter the passcode to record results. Viewing the standings doesn't need one.</p>
+    <input class="modal-input" id="pcInput" type="text" inputmode="text" autocomplete="off"
+           autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Passcode">
+    <div class="modal-err" id="pcErr">That's not the passcode — try again</div>
+    <div class="modal-btns">
+      <button class="btn-line" id="pcCancel">Cancel</button>
+      <button class="btn-line primary" id="pcGo">Unlock</button>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -168,40 +202,130 @@ const GROUPS = [
     {p1:"Julie Raybould", p2:"Mariah Nisar",        h:9},
   ]},
 ];
+/* Order of play — matches the printed 5-team round-robin sheet exactly.
+   Sheet is 1-indexed (1 vs 4); these are 0-indexed. Pair order is display order. */
+const ROUNDS=[
+  { pairs:[[0,3],[1,2]], bye:4 },   // R1: 1v4, 2v3, 5-bye
+  { pairs:[[2,0],[3,4]], bye:1 },   // R2: 3v1, 4v5, 2-bye
+  { pairs:[[4,2],[0,1]], bye:3 },   // R3: 5v3, 1v2, 4-bye
+  { pairs:[[1,4],[2,3]], bye:0 },   // R4: 2v5, 3v4, 1-bye
+  { pairs:[[3,1],[4,0]], bye:2 },   // R5: 4v2, 5v1, 3-bye
+];
 const TARGET=21;
 const STORE_KEY="kobras-handicap-doubles-v2";
+const UNLOCK_KEY="kobras-scorer-unlocked";
 const MEDALS=["🥇","🥈","🥉"];
 
-let scores={}, activeGroup=0, storageOK=true;
+/* ================= SHARED BACKEND CONFIG =================
+   Leave SUPABASE_URL blank to run purely on localStorage (offline mode) —
+   the app works exactly as before, just not shared between phones.
 
-/* ---- Persistence: localStorage (survives refresh / close / restart) ---- */
+   Fill these in after creating the Supabase project (see SETUP.md).
+   The anon key is meant to be public — it is safe in a public repo.
+   SCORER_PASSCODE is a convenience gate that prevents accidental edits by
+   spectators. It is visible in page source, so it is NOT real security.     */
+const SUPABASE_URL      = "";              // e.g. "https://abcdefgh.supabase.co"
+const SUPABASE_ANON_KEY = "";              // the "anon public" key
+const SCORER_PASSCODE   = "kobras21";
+const TOURNAMENT_ID     = "kobras-july26";
+const SYNC_MS           = 10000;           // how often to pull others' scores
+/* ========================================================= */
+
+let scores={}, activeGroup=0, storageOK=true;
+let canScore=false, syncState="local", pushTimer=null, pendingPush=false;
+
+const backendOn=()=>!!(SUPABASE_URL&&SUPABASE_ANON_KEY);
+const REST=()=>`${SUPABASE_URL}/rest/v1/tournament_state`;
+const HEADERS=()=>({apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`,'Content-Type':'application/json'});
+
+/* ---- Local persistence: survives refresh / close / restart ---- */
 function loadScores(){
   try{
     const raw=localStorage.getItem(STORE_KEY);
     if(raw) scores=JSON.parse(raw)||{};
     storageOK=true;
   }catch(e){ storageOK=false; }
+  try{ canScore=localStorage.getItem(UNLOCK_KEY)==="1"; }catch(e){}
 }
+function saveLocal(){
+  try{ localStorage.setItem(STORE_KEY,JSON.stringify(scores)); storageOK=true; }
+  catch(e){ storageOK=false; }
+}
+/* Every write lands locally first, then queues a push. Losing wifi never
+   blocks scoring — entries re-sync when the connection returns. */
 function saveScores(){
-  try{
-    localStorage.setItem(STORE_KEY, JSON.stringify(scores));
-    storageOK=true;
-    setSaved();
-  }catch(e){
-    storageOK=false;
-    setSaved(true);
+  saveLocal();
+  if(backendOn()){
+    pendingPush=true;
+    clearTimeout(pushTimer);
+    pushTimer=setTimeout(flushPush,800);   // debounce so typing "21" is one push
   }
+  setSaved();
 }
-function setSaved(failed){
+
+/* ---- Shared backend: merge newest-per-match, so two scorers on two phones
+   never clobber each other's rounds ---- */
+function mergeScores(base,incoming){
+  const out={...base};
+  for(const k in incoming){
+    const it=incoming[k]&&incoming[k].t||0, ot=out[k]&&out[k].t||0;
+    if(!(k in out)||it>ot) out[k]=incoming[k];
+  }
+  return out;
+}
+async function pullRemote(){
+  const r=await fetch(`${REST()}?id=eq.${encodeURIComponent(TOURNAMENT_ID)}&select=data`,{headers:HEADERS()});
+  if(!r.ok) throw new Error("pull "+r.status);
+  const rows=await r.json();
+  return rows.length?(rows[0].data||{}):{};
+}
+async function flushPush(){
+  if(!backendOn()||!pendingPush) return;
+  try{
+    const r=await fetch(REST(),{
+      method:"POST",
+      headers:{...HEADERS(),Prefer:"resolution=merge-duplicates,return=minimal"},
+      body:JSON.stringify({id:TOURNAMENT_ID,data:scores,updated_at:new Date().toISOString()})
+    });
+    if(!r.ok) throw new Error("push "+r.status);
+    pendingPush=false; syncState="synced";
+  }catch(e){
+    syncState="offline";
+    setTimeout(flushPush,4000);            // keep retrying quietly
+  }
+  setSaved();
+}
+async function syncTick(){
+  if(!backendOn()) return;
+  try{
+    const remote=await pullRemote();
+    const merged=mergeScores(scores,remote);
+    const changed=JSON.stringify(merged)!==JSON.stringify(scores);
+    scores=merged;
+    if(changed){
+      saveLocal();
+      // never yank the keyboard away from someone mid-entry
+      if(!document.activeElement||!document.activeElement.classList.contains('scin')) render();
+    }
+    if(!pendingPush) syncState="synced";
+  }catch(e){ syncState="offline"; }
+  setSaved();
+}
+function setSaved(){
   const note=document.getElementById('savenote');
   const txt=document.getElementById('savetext');
-  if(failed || !storageOK){
+  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  note.classList.remove('warn');
+  if(!storageOK){
     note.classList.add('warn');
     txt.textContent="Not saving on this device — use Copy results to back up";
+  }else if(!backendOn()){
+    txt.textContent="Saved on this device · survives refresh · "+t;
+  }else if(syncState==="offline"||pendingPush){
+    note.classList.add('warn');
+    txt.textContent="Saved locally · reconnecting to share…";
   }else{
-    note.classList.remove('warn');
-    const t=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    txt.textContent="Saved · survives refresh · "+t;
+    txt.textContent="Shared · everyone sees this · "+t;
   }
 }
 
@@ -226,11 +350,12 @@ function setScore(g,i,j,side,raw){
     else v=Math.max(floor,Math.min(TARGET,v));
     cur[which]=v;
   }
-  if(cur.a==null && cur.b==null) delete scores[key];
-  else scores[key]=cur;
+  cur.t=Date.now();       // stamp so the newest edit wins when phones merge
+  scores[key]=cur;        // empty entries kept as tombstones, not deleted,
+                          // otherwise a stale phone would resurrect them
   saveScores();           // save on every keystroke — no re-render, keeps focus
 }
-function resetMatch(g,i,j){ delete scores[mkey(g,i,j)]; saveScores(); render(); }
+function resetMatch(g,i,j){ scores[mkey(g,i,j)]={a:null,b:null,t:Date.now()}; saveScores(); render(); }
 
 function computeStandings(g){
   const teams=GROUPS[g].teams;
@@ -243,7 +368,9 @@ function computeStandings(g){
     else{rows[j].W++;rows[j].pts+=2;rows[i].L++;}
   }
   rows.forEach(r=>r.diff=r.PF-r.PA);
-  rows.sort((x,y)=>y.pts-x.pts||y.diff-x.diff||y.PF-x.PF||x.idx-y.idx);
+  /* Tournament is decided on TOTAL POINTS WON (PF), handicap start included.
+     Wins, then point difference, break ties. */
+  rows.sort((x,y)=>y.PF-x.PF||y.W-x.W||y.diff-x.diff||x.idx-y.idx);
   return rows;
 }
 
@@ -259,28 +386,28 @@ function renderStandings(g){
   const rows=computeStandings(g);
   const anyPlayed=rows.some(r=>r.P>0);
   let html=`<div class="eyebrow">Standings</div>
-    <p class="eyebrow-note">Each group is its own tournament — top 3 win 🥇 🥈 🥉. 2 pts per win, ties split on point difference.</p>
-    <table class="standings"><thead><tr><th></th><th class="tm">Team</th><th>P</th><th>W</th><th>L</th><th>+/–</th><th>Pts</th></tr></thead><tbody>`;
+    <p class="eyebrow-note">Each group is its own tournament — top 3 win 🥇 🥈 🥉. Ranked on <b>total points won</b> across all games (handicap start included). Wins, then point difference, break ties.</p>
+    <table class="standings"><thead><tr><th></th><th class="tm">Team</th><th>P</th><th>W</th><th>+/–</th><th>Points</th></tr></thead><tbody>`;
   rows.forEach((r,idx)=>{
     const medal=anyPlayed&&idx<3?`<span class="medal">${MEDALS[idx]}</span>`:(idx+1);
     const diff=(r.diff>0?'+':'')+r.diff;
     html+=`<tr class="${anyPlayed&&idx===0?'medal1':''}">
       <td class="rank">${medal}</td>
       <td class="tm"><div class="team-name">${r.t.p1} <span class="amp">&amp;</span> ${r.t.p2}</div><span class="hcap-tag">start ${r.t.h}</span></td>
-      <td>${r.P}</td><td>${r.W}</td><td>${r.L}</td><td>${r.P?diff:'–'}</td><td class="pts-cell">${r.pts}</td></tr>`;
+      <td>${r.P}</td><td>${r.W}</td><td>${r.P?diff:'–'}</td><td class="pts-cell">${r.PF}</td></tr>`;
   });
   return html+`</tbody></table>`;
 }
-function sideHTML(g,i,j,side){
+function sideHTML(g,i,j,teamIdx){
   const s=getScore(g,i,j),teams=GROUPS[g].teams;
-  const teamIdx=side==='lo'?s.lo:s.hi,t=teams[teamIdx];
+  const side=teamIdx===s.lo?'lo':'hi', t=teams[teamIdx];
   const val=side==='lo'?s.a:s.b, other=side==='lo'?s.b:s.a, floor=t.h;
   const complete=isComplete(s), isWinner=complete&&val>other;
   return `<div class="side ${isWinner?'winner':''}">
     <div class="names"><div class="n">${t.p1} <span class="amp">&amp;</span> ${t.p2}${isWinner?'<span class="trophy">🏆</span>':''}</div>
       <div class="start">starts on ${t.h}</div></div>
     <input class="scin" type="number" inputmode="numeric" min="${floor}" max="${TARGET}" step="1"
-      value="${val==null?'':val}" placeholder="–"
+      value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'}
       oninput="setScore(${g},${i},${j},'${side}',this.value)"
       onchange="render()">
   </div>`;
@@ -290,50 +417,45 @@ function matchHTML(g,i,j){
   const cls=complete?'done':(partial?'part':'');
   const status=complete?'Final':(partial?'Enter both scores':'Not recorded');
   return `<div class="match ${cls}"><div class="m-status"><span>${status}</span>
-    <span class="reset" title="Clear this result" onclick="resetMatch(${g},${i},${j})">↺</span></div>
-    ${sideHTML(g,i,j,'lo')}${sideHTML(g,i,j,'hi')}</div>`;
-}
-function buildRounds(n){
-  const t=[...Array(n).keys()]; if(n%2===1) t.push(-1);
-  const m=t.length,rounds=[],arr=t.slice();
-  for(let r=0;r<m-1;r++){
-    const pairs=[]; let bye=-1;
-    for(let k=0;k<m/2;k++){
-      const a=arr[k],b=arr[m-1-k];
-      if(a===-1) bye=b; else if(b===-1) bye=a; else pairs.push([a,b]);
-    }
-    rounds.push({pairs,bye});
-    const fixed=arr[0],rest=arr.slice(1);rest.unshift(rest.pop());
-    arr.length=0;arr.push(fixed,...rest);
-  }
-  return rounds;
+    ${canScore?`<span class="reset" title="Clear this result" onclick="resetMatch(${g},${i},${j})">↺</span>`:''}</div>
+    ${sideHTML(g,i,j,i)}${sideHTML(g,i,j,j)}</div>`;
 }
 function renderFixtures(g){
-  const teams=GROUPS[g].teams,rounds=buildRounds(teams.length);
+  const teams=GROUPS[g].teams;
   let html=`<div class="eyebrow">Results entry</div>
-    <div class="help">After each game, type both final scores (the winner reaches <b>21</b>). Scores include the handicap start, so a team on 8 that wins reads <b>21</b>, their opponent whatever they reached. Every entry saves instantly.</div>`;
-  rounds.forEach((rd,ri)=>{
-    const byeName=rd.bye>=0?`${teams[rd.bye].p1} & ${teams[rd.bye].p2}`:null;
-    html+=`<div class="round-label">Round ${ri+1}${byeName?`<span class="bye">bye · ${byeName}</span>`:''}</div>`;
+    <div class="help">After each game, type both final scores (the winner reaches <b>21</b>). Scores include the handicap start, so a team on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
+  ROUNDS.forEach((rd,ri)=>{
+    const byeName=`${teams[rd.bye].p1} & ${teams[rd.bye].p2}`;
+    html+=`<div class="round-label">Round ${ri+1}<span class="bye">bye · ${byeName}</span></div>`;
     rd.pairs.forEach(([i,j])=>{html+=matchHTML(g,i,j);});
   });
   return html;
 }
 function render(){
   renderTabs();
+  document.body.classList.toggle('locked',!canScore);
+  const lb=document.getElementById('lockBtn');
+  lb.textContent=canScore?"Scoring unlocked":"Scorer login";
+  lb.classList.toggle('unlocked',canScore);
+  document.getElementById('resetAll').style.display=canScore?'':'none';
   document.getElementById('content').innerHTML=renderStandings(activeGroup)+renderFixtures(activeGroup);
+}
+function setUnlocked(v){
+  canScore=v;
+  try{ v?localStorage.setItem(UNLOCK_KEY,"1"):localStorage.removeItem(UNLOCK_KEY); }catch(e){}
+  render();
 }
 
 /* ---- Backup / export ---- */
 function buildResultsText(){
-  let out=["Keighley Kobras — Handicap Doubles","Tue 21 July 2026",""];
+  let out=["Keighley Kobras — Handicap Doubles","Tue 21 July 2026","Ranked on total points won (handicap included)",""];
   GROUPS.forEach((grp,gi)=>{
     out.push(grp.name.toUpperCase());
     const rows=computeStandings(gi);
     const anyPlayed=rows.some(r=>r.P>0);
     rows.forEach((r,idx)=>{
       const pos=anyPlayed&&idx<3?MEDALS[idx]:(idx+1+".");
-      out.push(`${pos} ${r.t.p1} & ${r.t.p2} — ${r.pts} pts (${r.W}W-${r.L}L, ${r.diff>0?'+':''}${r.diff})`);
+      out.push(`${pos} ${r.t.p1} & ${r.t.p2} — ${r.PF} pts (${r.W}W-${r.L}L, ${r.diff>0?'+':''}${r.diff})`);
     });
     out.push("");
   });
@@ -357,9 +479,42 @@ document.getElementById('copyBtn').onclick=async()=>{
     document.body.removeChild(ta);
   }
 };
+/* In-page modal rather than prompt() — native dialogs are suppressed in
+   sandboxed iframes and by some mobile browsers, and every scorer needs this. */
+const pcModal=document.getElementById('pcModal');
+const pcInput=document.getElementById('pcInput');
+const pcErr=document.getElementById('pcErr');
+function openPasscode(){
+  pcErr.classList.remove('show');
+  pcInput.value="";
+  pcModal.classList.add('show');
+  setTimeout(()=>pcInput.focus(),50);
+}
+function closePasscode(){ pcModal.classList.remove('show'); }
+function submitPasscode(){
+  if(pcInput.value.trim().toLowerCase()===SCORER_PASSCODE.trim().toLowerCase()){
+    closePasscode(); setUnlocked(true); toast("Scoring unlocked");
+  }else{
+    pcErr.classList.add('show');
+    pcInput.select();
+  }
+}
+document.getElementById('pcGo').onclick=submitPasscode;
+document.getElementById('pcCancel').onclick=closePasscode;
+pcInput.addEventListener('keydown',e=>{ if(e.key==='Enter') submitPasscode(); });
+pcModal.addEventListener('click',e=>{ if(e.target===pcModal) closePasscode(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&pcModal.classList.contains('show')) closePasscode(); });
+
+document.getElementById('lockBtn').onclick=()=>{
+  if(canScore){ setUnlocked(false); toast("Locked — view only"); }
+  else openPasscode();
+};
 document.getElementById('resetAll').onclick=()=>{
-  if(confirm('Reset ALL scores for every group? This cannot be undone.')){
-    scores={}; saveScores(); render(); window.scrollTo({top:0}); toast("All scores reset");
+  if(confirm('Reset ALL scores for every group? This clears them for everyone, on every device.')){
+    const now=Date.now();
+    // tombstone every match so the reset propagates instead of being undone by a sync
+    Object.keys(scores).forEach(k=>{ scores[k]={a:null,b:null,t:now}; });
+    saveScores(); render(); window.scrollTo({top:0}); toast("All scores reset");
   }
 };
 
@@ -367,6 +522,12 @@ document.getElementById('resetAll').onclick=()=>{
 loadScores();
 render();
 setSaved();
+if(backendOn()){
+  syncTick();                       // pull shared state straight away
+  setInterval(syncTick,SYNC_MS);
+  window.addEventListener('online',()=>{ syncTick(); flushPush(); });
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) syncTick(); });
+}
 window.addEventListener('storage',e=>{ if(e.key===STORE_KEY){ loadScores(); render(); }});
 </script>
 </body>
