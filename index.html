@@ -225,8 +225,7 @@ const ROUNDS=[
   { pairs:[[1,4],[2,3]], bye:0 },   // R4: 2v5, 3v4, 1-bye
   { pairs:[[3,1],[4,0]], bye:2 },   // R5: 4v2, 5v1, 3-bye
 ];
-const TARGET=21;        // points that normally win a game
-const MAX_SCORE=30;     // hard cap: at 29-all the 30th point wins
+const TARGET=21;        // first to 21 wins, no setting — 21 is the only winning score
 const STORE_KEY="kobras-handicap-doubles-v2";
 const UNLOCK_KEY="kobras-scorer-unlocked";
 const MEDALS=["🥇","🥈","🥉"];
@@ -400,29 +399,20 @@ function getScore(g,i,j){
   return {a:(s.a??null),b:(s.b??null),lo,hi,key};
 }
 
-/* ---- Badminton scoring (BWF Law 7) ----
-   21 wins the game, EXCEPT:
-     · at 20-all you must lead by 2  → 22-20, 23-21 … 29-27
-     · at 29-all the 30th point wins → 30-29, and 30 is a hard cap
-   21-20 is only reachable playing WITHOUT setting, so it is allowed too —
-   this accepts every legal result under either rule set.
-   Scores here include the handicap start, so neither side can finish
-   below the number it started on. */
+/* ---- Scoring: first to 21, NO setting ----
+   The winner finishes on exactly 21; the loser is anything 0-20. There is no
+   play-on at 20-all and no cap above 21, so 21 is the only winning score.
+   Scores include the handicap start, so neither side can finish below the
+   number it started on. */
 function validateGame(x,y,hx,hy){
   if(x==null||y==null) return {ok:false,msg:null};
   if(!Number.isInteger(x)||!Number.isInteger(y)) return {ok:false,msg:"Whole numbers only"};
   if(x===y) return {ok:false,msg:"A game can't be drawn"};
   if(x<hx||y<hy) return {ok:false,msg:"Below a pair's handicap start"};
   const w=Math.max(x,y), l=Math.min(x,y);
+  if(w>TARGET) return {ok:false,msg:`No setting — a game can't go above ${TARGET}`};
   if(w<TARGET) return {ok:false,msg:`Winner must reach ${TARGET}`};
-  if(w>MAX_SCORE) return {ok:false,msg:`Nothing goes above ${MAX_SCORE}`};
-  if(w===TARGET) return {ok:true,msg:null};                       // 21-19, 21-20 …
-  if(w===MAX_SCORE) return (l===28||l===29)
-    ? {ok:true,msg:null}
-    : {ok:false,msg:"At 29-all the 30th point wins — 30–29 or 30–28"};
-  return (w-l===2)                                                // 22-20 … 29-27
-    ? {ok:true,msg:null}
-    : {ok:false,msg:"Past 20-all you must win by two"};
+  return {ok:true,msg:null};                       // 21-0 … 21-20
 }
 function checkGame(g,s){
   // getTeam, not GROUPS, so an edited handicap feeds straight into validation
@@ -502,7 +492,7 @@ function sideHTML(g,i,j,teamIdx){
     <div class="names"><div class="n">${esc(t.p1)} <span class="amp">&amp;</span> ${esc(t.p2)}${isWinner?'<span class="trophy">🏆</span>':''}</div>
       <div class="start">starts on ${t.h}</div></div>
     <input class="scin" type="number" inputmode="numeric" min="${floor}" max="${TARGET}" step="1"
-      value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'} max="${MAX_SCORE}"
+      value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'} max="${TARGET}"
       oninput="setScore(${g},${i},${j},'${side}',this.value)"
       onchange="render()">
   </div>`;
@@ -520,7 +510,7 @@ function matchHTML(g,i,j){
 }
 function renderFixtures(g){
   let html=`<div class="eyebrow">Results entry</div>
-    <div class="help">After each game, type both final scores. Winner normally reaches <b>21</b> — but at 20-all you play on until someone leads by <b>2</b>, and at 29-all the <b>30th</b> point wins. Scores include the handicap start, so a pair on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
+    <div class="help">After each game, type both final scores. First to <b>21</b> wins — <b>no setting</b>, so the winner always finishes on <b>21</b>. Scores include the handicap start, so a pair on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
   ROUNDS.forEach((rd,ri)=>{
     const bt=getTeam(g,rd.bye), byeName=`${esc(bt.p1)} &amp; ${esc(bt.p2)}`;
     html+=`<div class="round-label">Round ${ri+1}<span class="bye">bye · ${byeName}</span></div>`;
