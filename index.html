@@ -111,6 +111,16 @@
   .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);}
   .savenote.warn .dot{background:var(--live);}
 
+  .edit-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;}
+  .edit-head{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-soft);font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:8px;}
+  .edit-h{font-family:'Inter';font-size:10.5px;letter-spacing:.2px;text-transform:none;color:var(--kobra);font-weight:600;}
+  .edit-reset{margin-left:auto;font-size:10.5px;letter-spacing:.2px;text-transform:none;color:var(--live);font-weight:700;cursor:pointer;border:1px solid #F6C9BF;border-radius:20px;padding:2px 9px;}
+  .nmin{width:100%;font-family:'Inter';font-size:15px;font-weight:600;padding:10px 12px;border:1.5px solid var(--line-strong);border-radius:10px;background:#F8FAFE;color:var(--ink);}
+  .nmin + .nmin{margin-top:7px;}
+  .nmin:focus{outline:none;border-color:var(--kobra);background:#fff;box-shadow:0 0 0 3px rgba(30,80,223,.15);}
+  .edit-done{margin:16px 0 4px;display:flex;}
+  .edit-done .btn-line{flex:1;text-align:center;padding:13px;}
+
   .modal{position:fixed;inset:0;z-index:70;background:rgba(8,21,67,.55);backdrop-filter:blur(2px);display:none;align-items:center;justify-content:center;padding:20px;}
   .modal.show{display:flex;}
   .modal-card{background:var(--card);border-radius:16px;padding:20px;width:100%;max-width:340px;box-shadow:0 16px 44px rgba(0,0,0,.3);}
@@ -139,14 +149,6 @@
         <div class="when">📅 <b>Tue 21 July</b> · 7:00–9:00pm</div>
       </div>
     </div>
-    <div class="rules">
-      <span class="rule">1 game to <b>21</b></span>
-      <span class="rule">At 20-all, <b>win by 2</b></span>
-      <span class="rule"><b>30</b> caps it</span>
-      <span class="rule">Start on your <b>handicap</b></span>
-      <span class="rule">Play <b>everyone</b> in your group</span>
-      <span class="rule"><b>Total points</b> wins</span>
-    </div>
     <div class="info">
       <div class="info-card"><div class="k">Entry</div><div class="v">£7</div></div>
       <div class="info-card"><div class="k">Medals · per group</div><div class="medal-row">🥇 🥈 🥉</div></div>
@@ -162,6 +164,7 @@
     <div class="foot-btns">
       <button class="btn-line primary" id="copyBtn">Copy results</button>
       <button class="btn-line" id="lockBtn">Scorer login</button>
+      <button class="btn-line" id="editBtn">Edit names</button>
       <button class="btn-line danger" id="resetAll">Reset all</button>
     </div>
     <div class="savenote" id="savenote"><span class="dot"></span><span id="savetext">Ready</span></div>
@@ -236,24 +239,44 @@ const TOURNAMENT_ID     = "kobras-july26";
 const SYNC_MS           = 10000;           // how often to pull others' scores
 /* ========================================================= */
 
-let scores={}, activeGroup=0, storageOK=true;
-let canScore=false, syncState="local", pushTimer=null, pendingPush=false;
+let scores={}, names={}, activeGroup=0, storageOK=true;
+let canScore=false, editMode=false, syncState="local", pushTimer=null, pendingPush=false;
+
+/* Name overrides, keyed "<group>-<teamIndex>", so a drop-out replacement
+   shows everywhere and syncs to every device. GROUPS stays the fallback. */
+function getTeam(g,i){
+  const base=GROUPS[g].teams[i], o=names[`${g}-${i}`];
+  return o?{...base,p1:o.p1||base.p1,p2:o.p2||base.p2}:base;
+}
+function setName(g,i,which,val){
+  const k=`${g}-${i}`, base=GROUPS[g].teams[i];
+  const cur=names[k]||{p1:base.p1,p2:base.p2};
+  names[k]={...cur,[which]:val,t:Date.now()};
+  saveScores();
+}
 
 const backendOn=()=>!!(SUPABASE_URL&&SUPABASE_ANON_KEY);
 const REST=()=>`${SUPABASE_URL}/rest/v1/tournament_state`;
 const HEADERS=()=>({apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`,'Content-Type':'application/json'});
 
 /* ---- Local persistence: survives refresh / close / restart ---- */
+/* Payload is {scores,names}. Older saves were a bare scores object, so
+   anything without a `scores` key is read as legacy and still loads. */
+function unpack(obj){
+  if(!obj||typeof obj!=='object') return {scores:{},names:{}};
+  if(obj.scores||obj.names) return {scores:obj.scores||{},names:obj.names||{}};
+  return {scores:obj,names:{}};                       // legacy shape
+}
 function loadScores(){
   try{
     const raw=localStorage.getItem(STORE_KEY);
-    if(raw) scores=JSON.parse(raw)||{};
+    if(raw){ const u=unpack(JSON.parse(raw)); scores=u.scores; names=u.names; }
     storageOK=true;
   }catch(e){ storageOK=false; }
   try{ canScore=localStorage.getItem(UNLOCK_KEY)==="1"; }catch(e){}
 }
 function saveLocal(){
-  try{ localStorage.setItem(STORE_KEY,JSON.stringify(scores)); storageOK=true; }
+  try{ localStorage.setItem(STORE_KEY,JSON.stringify({scores,names})); storageOK=true; }
   catch(e){ storageOK=false; }
 }
 /* Every write lands locally first, then queues a push. Losing wifi never
@@ -290,7 +313,7 @@ async function flushPush(){
     const r=await fetch(REST(),{
       method:"POST",
       headers:{...HEADERS(),Prefer:"resolution=merge-duplicates,return=minimal"},
-      body:JSON.stringify({id:TOURNAMENT_ID,data:scores,updated_at:new Date().toISOString()})
+      body:JSON.stringify({id:TOURNAMENT_ID,data:{scores,names},updated_at:new Date().toISOString()})
     });
     if(!r.ok) throw new Error("push "+r.status);
     pendingPush=false; syncState="synced";
@@ -303,14 +326,16 @@ async function flushPush(){
 async function syncTick(){
   if(!backendOn()) return;
   try{
-    const remote=await pullRemote();
-    const merged=mergeScores(scores,remote);
-    const changed=JSON.stringify(merged)!==JSON.stringify(scores);
-    scores=merged;
+    const remote=unpack(await pullRemote());
+    const mScores=mergeScores(scores,remote.scores);
+    const mNames =mergeScores(names, remote.names);   // same newest-wins rule
+    const changed=JSON.stringify([mScores,mNames])!==JSON.stringify([scores,names]);
+    scores=mScores; names=mNames;
     if(changed){
       saveLocal();
       // never yank the keyboard away from someone mid-entry
-      if(!document.activeElement||!document.activeElement.classList.contains('scin')) render();
+      const ae=document.activeElement;
+      if(!ae||!(ae.classList.contains('scin')||ae.classList.contains('nmin'))) render();
     }
     if(!pendingPush) syncState="synced";
   }catch(e){ syncState="offline"; }
@@ -395,7 +420,7 @@ function resetMatch(g,i,j){ scores[mkey(g,i,j)]={a:null,b:null,t:Date.now()}; sa
 
 function computeStandings(g){
   const teams=GROUPS[g].teams;
-  const rows=teams.map((t,idx)=>({idx,t,P:0,W:0,L:0,PF:0,PA:0,pts:0}));
+  const rows=teams.map((t,idx)=>({idx,t:getTeam(g,idx),P:0,W:0,L:0,PF:0,PA:0,pts:0}));
   for(let i=0;i<teams.length;i++) for(let j=i+1;j<teams.length;j++){
     const s=getScore(g,i,j); if(!isComplete(g,s)) continue;   // invalid games don't count until fixed
     rows[i].P++;rows[j].P++;
@@ -423,24 +448,24 @@ function renderStandings(g){
   const anyPlayed=rows.some(r=>r.P>0);
   let html=`<div class="eyebrow">Standings</div>
     <p class="eyebrow-note">Each group is its own tournament — top 3 win 🥇 🥈 🥉. Ranked on <b>total points won</b> across all games (handicap start included). Wins, then point difference, break ties.</p>
-    <table class="standings"><thead><tr><th></th><th class="tm">Team</th><th>P</th><th>W</th><th>+/–</th><th>Points</th></tr></thead><tbody>`;
+    <table class="standings"><thead><tr><th></th><th class="tm">Team</th><th>P</th><th>W</th><th>Points</th></tr></thead><tbody>`;
   rows.forEach((r,idx)=>{
     const medal=anyPlayed&&idx<3?`<span class="medal">${MEDALS[idx]}</span>`:(idx+1);
     const diff=(r.diff>0?'+':'')+r.diff;
     html+=`<tr class="${anyPlayed&&idx===0?'medal1':''}">
       <td class="rank">${medal}</td>
-      <td class="tm"><div class="team-name">${r.t.p1} <span class="amp">&amp;</span> ${r.t.p2}</div><span class="hcap-tag">start ${r.t.h}</span></td>
-      <td>${r.P}</td><td>${r.W}</td><td>${r.P?diff:'–'}</td><td class="pts-cell">${r.PF}</td></tr>`;
+      <td class="tm"><div class="team-name">${esc(r.t.p1)} <span class="amp">&amp;</span> ${esc(r.t.p2)}</div><span class="hcap-tag">start ${r.t.h}</span></td>
+      <td>${r.P}</td><td>${r.W}</td><td class="pts-cell">${r.PF}</td></tr>`;
   });
   return html+`</tbody></table>`;
 }
 function sideHTML(g,i,j,teamIdx){
-  const s=getScore(g,i,j),teams=GROUPS[g].teams;
-  const side=teamIdx===s.lo?'lo':'hi', t=teams[teamIdx];
+  const s=getScore(g,i,j);
+  const side=teamIdx===s.lo?'lo':'hi', t=getTeam(g,teamIdx);
   const val=side==='lo'?s.a:s.b, other=side==='lo'?s.b:s.a, floor=t.h;
   const complete=isComplete(g,s), isWinner=complete&&val>other;
   return `<div class="side ${isWinner?'winner':''}">
-    <div class="names"><div class="n">${t.p1} <span class="amp">&amp;</span> ${t.p2}${isWinner?'<span class="trophy">🏆</span>':''}</div>
+    <div class="names"><div class="n">${esc(t.p1)} <span class="amp">&amp;</span> ${esc(t.p2)}${isWinner?'<span class="trophy">🏆</span>':''}</div>
       <div class="start">starts on ${t.h}</div></div>
     <input class="scin" type="number" inputmode="numeric" min="${floor}" max="${TARGET}" step="1"
       value="${val==null?'':val}" placeholder="–" ${canScore?'':'disabled'} max="${MAX_SCORE}"
@@ -460,16 +485,45 @@ function matchHTML(g,i,j){
     ${sideHTML(g,i,j,i)}${sideHTML(g,i,j,j)}</div>`;
 }
 function renderFixtures(g){
-  const teams=GROUPS[g].teams;
   let html=`<div class="eyebrow">Results entry</div>
     <div class="help">After each game, type both final scores. Winner normally reaches <b>21</b> — but at 20-all you play on until someone leads by <b>2</b>, and at 29-all the <b>30th</b> point wins. Scores include the handicap start, so a pair on 8 that wins reads <b>21</b>, their opponent whatever they reached. <b>Every point counts</b> — your total across all 4 games decides the tournament. Every entry saves instantly.</div>`;
   ROUNDS.forEach((rd,ri)=>{
-    const byeName=`${teams[rd.bye].p1} & ${teams[rd.bye].p2}`;
+    const bt=getTeam(g,rd.bye), byeName=`${esc(bt.p1)} &amp; ${esc(bt.p2)}`;
     html+=`<div class="round-label">Round ${ri+1}<span class="bye">bye · ${byeName}</span></div>`;
     rd.pairs.forEach(([i,j])=>{html+=matchHTML(g,i,j);});
   });
   return html;
 }
+/* ---- Name editing: for drop-outs and last-minute substitutes.
+   Edits are overrides on top of GROUPS, timestamped and synced like scores,
+   so a change on one phone reaches every other device. Scores are keyed by
+   team index, never by name, so renaming a pair never touches its results. */
+function renderNameEditor(g){
+  let html=`<div class="eyebrow">Edit names</div>
+    <p class="eyebrow-note">Swap in a replacement if someone drops out. Scores and handicaps stay with the position, so nothing already recorded is lost. Changes reach every device.</p>`;
+  GROUPS[g].teams.forEach((base,idx)=>{
+    const t=getTeam(g,idx);
+    const changed=t.p1!==base.p1||t.p2!==base.p2;   // resolved value, so tombstones read as unchanged
+    html+=`<div class="edit-card">
+      <div class="edit-head">Pair ${idx+1} <span class="edit-h">starts on ${t.h}</span>
+        ${changed?`<span class="edit-reset" onclick="resetName(${g},${idx})">undo</span>`:''}</div>
+      <input class="nmin" type="text" value="${escAttr(t.p1)}" placeholder="Player 1"
+        autocomplete="off" oninput="setName(${g},${idx},'p1',this.value)" onchange="render()">
+      <input class="nmin" type="text" value="${escAttr(t.p2)}" placeholder="Player 2"
+        autocomplete="off" oninput="setName(${g},${idx},'p2',this.value)" onchange="render()">
+    </div>`;
+  });
+  return html+`<div class="edit-done"><button class="btn-line primary" onclick="toggleEdit()">Done editing</button></div>`;
+}
+/* Names are user-entered and go into innerHTML, so escape on the way out.
+   esc() for text nodes, escAttr() for attribute values. */
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const escAttr=s=>esc(s).replace(/"/g,'&quot;');
+/* Tombstone rather than delete — a plain delete would be undone by the next
+   sync, since the remote copy still has it and would merge straight back. */
+function resetName(g,i){ names[`${g}-${i}`]={p1:null,p2:null,t:Date.now()}; saveScores(); render(); }
+function toggleEdit(){ editMode=!editMode; render(); window.scrollTo({top:0}); }
+
 function render(){
   renderTabs();
   document.body.classList.toggle('locked',!canScore);
@@ -477,7 +531,14 @@ function render(){
   lb.textContent=canScore?"Scoring unlocked":"Scorer login";
   lb.classList.toggle('unlocked',canScore);
   document.getElementById('resetAll').style.display=canScore?'':'none';
-  document.getElementById('content').innerHTML=renderStandings(activeGroup)+renderFixtures(activeGroup);
+  const eb=document.getElementById('editBtn');
+  eb.style.display=canScore?'':'none';           // editing is a scorer action
+  eb.textContent=editMode?'Back to scoring':'Edit names';
+  eb.classList.toggle('unlocked',editMode);
+  if(editMode&&!canScore) editMode=false;        // locking mid-edit drops you out
+  document.getElementById('content').innerHTML=editMode
+    ? renderNameEditor(activeGroup)
+    : renderStandings(activeGroup)+renderFixtures(activeGroup);
 }
 function setUnlocked(v){
   canScore=v;
@@ -494,7 +555,7 @@ function buildResultsText(){
     const anyPlayed=rows.some(r=>r.P>0);
     rows.forEach((r,idx)=>{
       const pos=anyPlayed&&idx<3?MEDALS[idx]:(idx+1+".");
-      out.push(`${pos} ${r.t.p1} & ${r.t.p2} — ${r.PF} pts (${r.W}W-${r.L}L, ${r.diff>0?'+':''}${r.diff})`);
+      out.push(`${pos} ${r.t.p1} & ${r.t.p2} — ${r.PF} pts (${r.W}W-${r.L}L)`);
     });
     out.push("");
   });
@@ -545,9 +606,10 @@ pcModal.addEventListener('click',e=>{ if(e.target===pcModal) closePasscode(); })
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&pcModal.classList.contains('show')) closePasscode(); });
 
 document.getElementById('lockBtn').onclick=()=>{
-  if(canScore){ setUnlocked(false); toast("Locked — view only"); }
+  if(canScore){ editMode=false; setUnlocked(false); toast("Locked — view only"); }
   else openPasscode();
 };
+document.getElementById('editBtn').onclick=toggleEdit;
 document.getElementById('resetAll').onclick=()=>{
   if(confirm('Reset ALL scores for every group? This clears them for everyone, on every device.')){
     const now=Date.now();
