@@ -1,10 +1,13 @@
 # Shared scores setup (Supabase)
 
-The app works **right now** with no setup — it saves to the browser's localStorage,
-exactly as before. Everything below is only needed to make scores **shared**, so
-anyone opening the link sees the same live standings.
+> **Status: done and live.** The project is created, the table exists, and the
+> keys are wired into `index.html`. Scores are shared across all devices right
+> now — nothing below needs doing again. It is kept as a record of the setup,
+> and in case the project ever needs rebuilding.
+>
+> Project: `brfxywzxpuxmwkpqlznh` · row id `kobras-july26`
 
-Takes about 5 minutes.
+Takes about 5 minutes from scratch.
 
 ## 1. Create the project
 
@@ -49,10 +52,15 @@ insert into tournament_state (id, data) values ('kobras-july26', '{}'::jsonb);
 
 ## 3. Get your keys
 
-Left sidebar → **Project Settings** → **API**. Copy:
+Left sidebar → **Project Settings** → **API Keys**. Copy:
 
 - **Project URL** — looks like `https://abcdefgh.supabase.co`
-- **anon / public** key — a long `eyJ...` string
+- the **publishable** key (`sb_publishable_...`), or on older projects the
+  **anon public** key (a long `eyJ...` JWT)
+
+> ⚠️ **Never use the `sb_secret_...` / `service_role` key here.** It bypasses all
+> row-level security and would give full database control to anyone who viewed
+> the page source. Only the publishable/anon key belongs in a public file.
 
 ## 4. Paste them into index.html
 
