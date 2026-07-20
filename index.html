@@ -113,7 +113,14 @@
 
   .edit-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;}
   .edit-head{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-soft);font-weight:700;margin-bottom:9px;display:flex;align-items:center;gap:8px;}
-  .edit-h{font-family:'Inter';font-size:10.5px;letter-spacing:.2px;text-transform:none;color:var(--kobra);font-weight:600;}
+  .edit-played{font-family:'Inter';font-size:10.5px;letter-spacing:.2px;text-transform:none;color:var(--kobra);font-weight:600;background:#EDF2FF;border-radius:20px;padding:2px 9px;}
+  .edit-hrow{display:flex;align-items:center;gap:9px;margin-top:9px;}
+  .edit-hrow label{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  .hcin{font-family:'Bebas Neue';font-size:24px;width:62px;height:42px;text-align:center;border:1.5px solid var(--line-strong);border-radius:10px;background:#F8FAFE;color:var(--kobra);-moz-appearance:textfield;padding:0;line-height:1;}
+  .hcin::-webkit-outer-spin-button,.hcin::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  .hcin:focus{outline:none;border-color:var(--kobra);background:#fff;box-shadow:0 0 0 3px rgba(30,80,223,.15);}
+  .edit-was{font-size:11px;color:var(--ink-soft);font-weight:600;}
+  .edit-warn{font-size:11.5px;line-height:1.4;color:var(--live);background:#FFEDE9;border:1px solid #F6C9BF;border-radius:10px;padding:8px 10px;margin-top:9px;}
   .edit-reset{margin-left:auto;font-size:10.5px;letter-spacing:.2px;text-transform:none;color:var(--live);font-weight:700;cursor:pointer;border:1px solid #F6C9BF;border-radius:20px;padding:2px 9px;}
   .nmin{width:100%;font-family:'Inter';font-size:15px;font-weight:600;padding:10px 12px;border:1.5px solid var(--line-strong);border-radius:10px;background:#F8FAFE;color:var(--ink);}
   .nmin + .nmin{margin-top:7px;}
@@ -164,7 +171,7 @@
     <div class="foot-btns">
       <button class="btn-line primary" id="copyBtn">Copy results</button>
       <button class="btn-line" id="lockBtn">Scorer login</button>
-      <button class="btn-line" id="editBtn">Edit names</button>
+      <button class="btn-line" id="editBtn">Edit pairs</button>
       <button class="btn-line danger" id="resetAll">Reset all</button>
     </div>
     <div class="savenote" id="savenote"><span class="dot"></span><span id="savetext">Ready</span></div>
@@ -242,17 +249,44 @@ const SYNC_MS           = 10000;           // how often to pull others' scores
 let scores={}, names={}, activeGroup=0, storageOK=true;
 let canScore=false, editMode=false, syncState="local", pushTimer=null, pendingPush=false;
 
-/* Name overrides, keyed "<group>-<teamIndex>", so a drop-out replacement
-   shows everywhere and syncs to every device. GROUPS stays the fallback. */
+/* Pair overrides, keyed "<group>-<teamIndex>" — names and handicap — so a
+   drop-out replacement shows everywhere and syncs to every device.
+   GROUPS stays the fallback. Note h uses a null check, not ||, because a
+   perfectly valid handicap of 0 is falsy. */
+const MAX_HCAP=20;      // 21 would mean starting on the winning score
 function getTeam(g,i){
   const base=GROUPS[g].teams[i], o=names[`${g}-${i}`];
-  return o?{...base,p1:o.p1||base.p1,p2:o.p2||base.p2}:base;
+  if(!o) return base;
+  return {...base, p1:o.p1||base.p1, p2:o.p2||base.p2, h:(o.h==null?base.h:o.h)};
+}
+function overrideRecord(g,i){
+  const base=GROUPS[g].teams[i], cur=names[`${g}-${i}`];
+  return cur||{p1:base.p1,p2:base.p2,h:base.h};
 }
 function setName(g,i,which,val){
-  const k=`${g}-${i}`, base=GROUPS[g].teams[i];
-  const cur=names[k]||{p1:base.p1,p2:base.p2};
-  names[k]={...cur,[which]:val,t:Date.now()};
+  names[`${g}-${i}`]={...overrideRecord(g,i),[which]:val,t:Date.now()};
   saveScores();
+}
+function setHandicap(g,i,raw){
+  const base=GROUPS[g].teams[i];
+  let v=parseInt(raw,10);
+  if(isNaN(v)) v=base.h;
+  v=Math.max(0,Math.min(MAX_HCAP,v));
+  names[`${g}-${i}`]={...overrideRecord(g,i),h:v,t:Date.now()};
+  saveScores();
+}
+/* How many games a pair already has recorded — changing their handicap
+   afterwards is worth warning about.
+   Counts games with both scores entered, NOT just currently-valid ones: a
+   handicap change can itself invalidate a game, and counting validity here
+   would zero the count and suppress the very warning it should raise. */
+function playedCount(g,i){
+  let n=0;
+  for(let j=0;j<GROUPS[g].teams.length;j++){
+    if(j===i) continue;
+    if(isFilled(getScore(g,i,j))) n++;
+  }
+  return n;
 }
 
 const backendOn=()=>!!(SUPABASE_URL&&SUPABASE_ANON_KEY);
@@ -391,8 +425,8 @@ function validateGame(x,y,hx,hy){
     : {ok:false,msg:"Past 20-all you must win by two"};
 }
 function checkGame(g,s){
-  const t=GROUPS[g].teams;
-  return validateGame(s.a,s.b,t[s.lo].h,t[s.hi].h);
+  // getTeam, not GROUPS, so an edited handicap feeds straight into validation
+  return validateGame(s.a,s.b,getTeam(g,s.lo).h,getTeam(g,s.hi).h);
 }
 const isFilled  =s=>s.a!=null&&s.b!=null;
 const isComplete=(g,s)=>isFilled(s)&&checkGame(g,s).ok;
@@ -499,18 +533,27 @@ function renderFixtures(g){
    so a change on one phone reaches every other device. Scores are keyed by
    team index, never by name, so renaming a pair never touches its results. */
 function renderNameEditor(g){
-  let html=`<div class="eyebrow">Edit names</div>
-    <p class="eyebrow-note">Swap in a replacement if someone drops out. Scores and handicaps stay with the position, so nothing already recorded is lost. Changes reach every device.</p>`;
+  let html=`<div class="eyebrow">Edit pairs</div>
+    <p class="eyebrow-note">Swap in a replacement if someone drops out, and adjust their handicap to suit. Results stay with the pair's position, so nothing already recorded is lost. Changes reach every device.</p>`;
   GROUPS[g].teams.forEach((base,idx)=>{
     const t=getTeam(g,idx);
-    const changed=t.p1!==base.p1||t.p2!==base.p2;   // resolved value, so tombstones read as unchanged
+    const changed=t.p1!==base.p1||t.p2!==base.p2||t.h!==base.h;  // resolved, so tombstones read as unchanged
+    const played=playedCount(g,idx);
     html+=`<div class="edit-card">
-      <div class="edit-head">Pair ${idx+1} <span class="edit-h">starts on ${t.h}</span>
-        ${changed?`<span class="edit-reset" onclick="resetName(${g},${idx})">undo</span>`:''}</div>
+      <div class="edit-head">Pair ${idx+1}
+        ${played?`<span class="edit-played">${played} game${played>1?'s':''} played</span>`:''}
+        ${changed?`<span class="edit-reset" onclick="resetTeam(${g},${idx})">undo</span>`:''}</div>
       <input class="nmin" type="text" value="${escAttr(t.p1)}" placeholder="Player 1"
         autocomplete="off" oninput="setName(${g},${idx},'p1',this.value)" onchange="render()">
       <input class="nmin" type="text" value="${escAttr(t.p2)}" placeholder="Player 2"
         autocomplete="off" oninput="setName(${g},${idx},'p2',this.value)" onchange="render()">
+      <div class="edit-hrow">
+        <label for="h-${g}-${idx}">Starts on</label>
+        <input class="hcin" id="h-${g}-${idx}" type="number" inputmode="numeric" min="0" max="${MAX_HCAP}" step="1"
+          value="${t.h}" oninput="setHandicap(${g},${idx},this.value)" onchange="render()">
+        ${t.h!==base.h?`<span class="edit-was">was ${base.h}</span>`:''}
+      </div>
+      ${(t.h!==base.h&&played)?`<div class="edit-warn">⚠ This pair has already played ${played} game${played>1?'s':''} on a handicap of ${base.h}. Those results still stand as recorded — check they still look right.</div>`:''}
     </div>`;
   });
   return html+`<div class="edit-done"><button class="btn-line primary" onclick="toggleEdit()">Done editing</button></div>`;
@@ -521,7 +564,7 @@ const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 const escAttr=s=>esc(s).replace(/"/g,'&quot;');
 /* Tombstone rather than delete — a plain delete would be undone by the next
    sync, since the remote copy still has it and would merge straight back. */
-function resetName(g,i){ names[`${g}-${i}`]={p1:null,p2:null,t:Date.now()}; saveScores(); render(); }
+function resetTeam(g,i){ names[`${g}-${i}`]={p1:null,p2:null,h:null,t:Date.now()}; saveScores(); render(); }
 function toggleEdit(){ editMode=!editMode; render(); window.scrollTo({top:0}); }
 
 function render(){
@@ -533,7 +576,7 @@ function render(){
   document.getElementById('resetAll').style.display=canScore?'':'none';
   const eb=document.getElementById('editBtn');
   eb.style.display=canScore?'':'none';           // editing is a scorer action
-  eb.textContent=editMode?'Back to scoring':'Edit names';
+  eb.textContent=editMode?"Back to scoring":"Edit pairs";
   eb.classList.toggle('unlocked',editMode);
   if(editMode&&!canScore) editMode=false;        // locking mid-edit drops you out
   document.getElementById('content').innerHTML=editMode
